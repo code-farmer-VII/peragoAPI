@@ -4,31 +4,101 @@ import { Repository } from 'typeorm';
 import { CreateEmployeePositionDto } from './dto/create-employee-position.dto';
 import { UpdateEmployeePositionDto } from './dto/update-employee-position.dto';
 import { EmployeePosition } from './entities/employee-position.entity';
+import { SchedulerRegistry } from '@nestjs/schedule';
+import { CronJob } from 'cron';
 
 @Injectable()
 export class EmployeePositionService {
   constructor(
     @InjectRepository(EmployeePosition)
     private readonly employeePositionRepository: Repository<EmployeePosition>,
+    private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
 
+  // async create(createEmployeePositionDto: CreateEmployeePositionDto): Promise<EmployeePosition> {
+  //   const position = this.employeePositionRepository.create(createEmployeePositionDto);
+
+  //   if (createEmployeePositionDto.parentId) {
+  //     const parent = await this.employeePositionRepository.findOne({
+  //       where: { id: createEmployeePositionDto.parentId },
+  //     });
+  //     if (!parent) {
+  //       throw new NotFoundException(`the parent id  ${createEmployeePositionDto.parentId} is not found in the herarchy of employee position`);
+  //     }
+  //     position.parent = parent;
+  //   }
+  //   const savedata = await this.employeePositionRepository.save({
+  //     parentId: createEmployeePositionDto.parentId
+  //   });
   async create(createEmployeePositionDto: CreateEmployeePositionDto): Promise<EmployeePosition> {
     const position = this.employeePositionRepository.create(createEmployeePositionDto);
 
     if (createEmployeePositionDto.parentId) {
       const parent = await this.employeePositionRepository.findOne({
-        where: { id: createEmployeePositionDto.parentId },
-      });
+              where: { id: createEmployeePositionDto.parentId },
+            });
       if (!parent) {
-        throw new NotFoundException(`the parent id  ${createEmployeePositionDto.parentId} is not found in the herarchy of employee position`);
+        throw new NotFoundException(`Parent position with ID ${createEmployeePositionDto.parentId} not found.`);
       }
       position.parent = parent;
     }
-    const savedata = await this.employeePositionRepository.save({
-      parentId: createEmployeePositionDto.parentId
-    });
-    return savedata
+
+    const savedPosition = await this.employeePositionRepository.save(position);
+        // Schedule deletion
+        const jobName = `delete_position_${savedPosition.id}`;
+        const deleteDate = new Date();
+        deleteDate.setMinutes(deleteDate.getMinutes() + 30); 
+    
+        const job = new CronJob(deleteDate, async () => {
+          await this.deletePosition(savedPosition.id);
+        });
+
+        this.schedulerRegistry.addCronJob(jobName, job);
+        job.start();
+    
+        return savedPosition;
   }
+
+  private async deletePosition(positionId: string): Promise<void> {
+    const position = await this.employeePositionRepository.findOne({where:{id:positionId}});
+    if (!position) {
+      throw new NotFoundException(`Position with ID ${positionId} not found.`);
+    }
+    await this.employeePositionRepository.remove(position);
+
+    // Remove the job from scheduler after deletion
+    const jobName = `delete_position_${positionId}`;
+    const job = this.schedulerRegistry.getCronJob(jobName);
+    if (job) {
+      job.stop();
+      this.schedulerRegistry.deleteCronJob(jobName);
+    }
+  }
+
+   async deleteJobSchedule(jobName: string): Promise<void> {
+    const job = this.schedulerRegistry.getCronJob(jobName);
+    if (job) {
+      job.stop();
+      this.schedulerRegistry.deleteCronJob(jobName);
+    } else {
+      throw new NotFoundException(`Job with name ${jobName} not found.`);
+    }
+  }
+
+   async stopJobSchedule(jobName: string): Promise<void> {
+    const job = this.schedulerRegistry.getCronJob(jobName);
+    if (job) {
+      job.stop();
+    } else {
+      throw new NotFoundException(`Job with name ${jobName} not found.`);
+    }
+  }
+
+  getCrons(): string[] {
+    return [...this.schedulerRegistry.getCronJobs().keys()];
+  }
+
+
 
   async update(id: string, updateEmployeePositionDto: UpdateEmployeePositionDto): Promise<EmployeePosition> {
     const position = await this.employeePositionRepository.findOne({ where: { id } });
